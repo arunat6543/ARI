@@ -1,0 +1,22 @@
+# Virtual environment
+bin/
+lib/
+lib64
+include/
+pyvenv.cfg
+share/
+
+# Models (too large for git)
+models/*.onnx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp files
+*.wav
+*.jpg
+
+# OS
+.DS_Store
