@@ -50,21 +50,12 @@ brain:
 # -- Wake Word / Sleep --------------------------------------------------------
 wake:
   phrases:
-    - "listen to me ari"
-    - "listen to me, ari"
+    - "ok ari"
+    - "okay ari"
+    - "okay, ari"
+    - "ok, ari"
     - "hey ari"
-    - "ari listen"
-    - "listen ari"
-    - "are you listening ari"
-    - "look at me ari"
-    - "look at me, ari"
-    - "can you hear me ari"
-    - "ready ari"
-    - "are you ready ari"
-    - "ari are you"
-    - "ari can you"
-    - "lister"
-    - "listen"
+    - "hey, ari"
   sleep_phrases:
     - "go back to sleep"
     - "stop listening"
@@ -72,7 +63,7 @@ wake:
     - "goodbye ari"
   check_duration: 3                # seconds of audio per wake word check
   silence_timeout: 60              # seconds of silence before auto-sleep
-  startup_message: "Ari is ready. Say, listen to me Ari, when you want to talk."
+  startup_message: "Ari is ready. Say, ok Ari, when you want to talk."
   wake_message: "I'm listening!"
   sleep_message: "Okay, going back to sleep. Call me when you need me!"
   timeout_message: "I'll go back to sleep now. Call me if you need me!"
