@@ -1,0 +1,8 @@
+faster-whisper
+numpy
+sounddevice
+piper-tts
+anthropic
+adafruit-circuitpython-pca9685
+adafruit-circuitpython-servokit
+pyyaml

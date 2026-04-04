@@ -1,0 +1,153 @@
+# ============================================================================
+# Ari Robot Assistant — Configuration
+# ============================================================================
+# All configurable values in one place. Modules read from here.
+# To override: copy to config/local.yaml and change values there.
+# ============================================================================
+
+# -- Audio / Microphone ------------------------------------------------------
+audio:
+  mic_sample_rate: 44100
+  whisper_sample_rate: 16000
+  mic_device: 0                    # sounddevice index (0 = first input)
+  aplay_device: "plughw:3,0"      # ALSA device for speaker output
+  silence_threshold: 400           # RMS threshold to detect speech
+  conversation_silence: 1.5        # seconds of silence to end an utterance
+  max_recording_duration: 30       # max seconds per utterance
+  min_recording_duration: 0.3      # min seconds to count as speech
+  no_speech_timeout: 8             # seconds before giving up waiting for speech
+
+# -- Speech-to-Text (Whisper) ------------------------------------------------
+stt:
+  model: "base"                    # tiny, base, small, medium, large
+  device: "cpu"
+  compute_type: "int8"
+  beam_size: 1
+  language: "en"
+  vad_filter: true
+
+# -- Text-to-Speech (Piper) --------------------------------------------------
+tts:
+  piper_bin: "~/ari-assistant/bin/piper"
+  model: "~/ari-assistant/models/en_US-libritts_r-medium.onnx"
+  speaker: "10"                    # speaker ID (for multi-speaker models)
+  length_scale: "1.4"             # speech speed (higher = slower)
+  sentence_pause: 0.0             # pause between sentences (seconds)
+
+# -- Claude / LLM Brain ------------------------------------------------------
+brain:
+  claude_cli: "~/.claude/remote/ccd-cli/2.1.87"
+  model: "haiku"                   # haiku, sonnet, opus
+  timeout: 30                      # seconds
+  system_prompt: >
+    You are Ari, a friendly voice assistant running on a Raspberry Pi 5.
+    You speak conversationally and keep responses concise (1-2 sentences)
+    since your answers will be spoken aloud via text-to-speech. Be natural,
+    warm, and friendly. When talking to Aadi (a young boy), be playful
+    and encouraging. Do NOT use emojis or special characters — your output
+    will be spoken aloud.
+
+# -- Wake Word / Sleep --------------------------------------------------------
+wake:
+  phrases:
+    - "listen to me ari"
+    - "listen to me, ari"
+    - "hey ari"
+    - "ari listen"
+    - "listen ari"
+    - "are you listening ari"
+    - "look at me ari"
+    - "look at me, ari"
+    - "can you hear me ari"
+    - "ready ari"
+    - "are you ready ari"
+    - "ari are you"
+    - "ari can you"
+    - "lister"
+    - "listen"
+  sleep_phrases:
+    - "go back to sleep"
+    - "stop listening"
+    - "bye ari"
+    - "goodbye ari"
+  check_duration: 3                # seconds of audio per wake word check
+  silence_timeout: 60              # seconds of silence before auto-sleep
+  startup_message: "Ari is ready. Say, listen to me Ari, when you want to talk."
+  wake_message: "I'm listening!"
+  sleep_message: "Okay, going back to sleep. Call me when you need me!"
+  timeout_message: "I'll go back to sleep now. Call me if you need me!"
+  goodbye_message: "Goodbye!"
+
+# -- Camera / Pan-Tilt --------------------------------------------------------
+camera:
+  capture_width: 1280
+  capture_height: 960
+  capture_timeout: 1500            # ms
+  image_max_bytes: 100000          # resize if larger for API
+  image_resize_width: 480          # target width when resizing
+
+servo:
+  pan_channel: 0
+  tilt_channel: 1
+  pan_home: 1600                   # microseconds
+  tilt_home: 2200
+  pan_min: 500
+  pan_max: 2500
+  tilt_min: 1500                   # limited by camera cable
+  tilt_max: 2800
+  step_us: 5                       # microseconds per step
+  step_delay: 0.012                # seconds between steps
+  pca9685_frequency: 50
+
+# -- Vision / Person Finding --------------------------------------------------
+vision:
+  keywords:
+    - "look"
+    - "see"
+    - "camera"
+    - "what is this"
+    - "what do you see"
+    - "picture"
+    - "photo"
+    - "watch"
+    - "in front"
+    - "looking at"
+    - "what am i holding"
+    - "what color"
+    - "identify"
+    - "show me"
+  find_keywords:
+    - "find me"
+    - "where am i"
+    - "find aadi"
+    - "find him"
+    - "find her"
+    - "look for me"
+    - "can you see me"
+    - "look at me"
+  camera_directions:
+    "look left": "left"
+    "look right": "right"
+    "look up": "up"
+    "look down": "down"
+    "look straight": "home"
+    "look center": "home"
+    "turn left": "left"
+    "turn right": "right"
+  scan_positions:
+    - [800, 2200]                  # far right
+    - [1200, 2200]                 # right
+    - [1600, 2200]                 # center
+    - [2000, 2200]                 # left
+    - [2400, 2200]                 # far left
+  scan_settle_time: 3.0            # seconds to wait after moving
+  scan_capture_wait: 2.5           # seconds to wait after capture
+  fine_tune_offset: 150            # pan adjustment when person is off-center
+
+# -- IPC / Daemon Paths -------------------------------------------------------
+ipc:
+  voice_fifo: "/tmp/ari_voice_cmd"
+  voice_status: "/tmp/ari_voice_status"
+  camera_fifo: "/tmp/ari_camera_cmd"
+  camera_status: "/tmp/ari_camera_status"
+  temp_dir: "/tmp/ari"
