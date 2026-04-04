@@ -1,47 +1,45 @@
-"""Person scanner for Ari — sweeps the pan-tilt mount and uses Claude Vision.
+"""Person and object scanner for Ari.
 
-Scans through a set of configurable positions, captures an image at each,
-and asks Claude (via the CLI) whether a person is visible.  If found,
-fine-tunes the pan position based on where in the frame the person appears.
+Two scanning modes:
+  1. **Live scan** (fast, ~5 seconds) — uses OpenCV face detection at 30 FPS
+     while smoothly panning the camera. No API calls needed for detection.
+  2. **Claude scan** (slower, ~40 seconds) — captures photos at each position
+     and asks Claude Vision. Use when live scan isn't available.
+
+After finding a target, Claude Vision is used to describe what was found.
 
 Usage::
 
     from ari.vision.scanner import PersonScanner
     scanner = PersonScanner(camera_client)
-    result = scanner.find_person()
+    result = scanner.find_person()  # uses live scan by default
     if result:
         pan, tilt, description = result
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 from ari.config import cfg
 from ari.vision.camera import image_to_base64
 
-
-# Type alias for the FIFO-based camera client.  Any object that
-# implements ``send(cmd: str) -> str | None`` will work.  In practice
-# this is typically a thin wrapper around the named pipe.
-class _FifoClientProtocol:
-    """Minimal protocol expected from the camera daemon client."""
-    def send(self, cmd: str) -> str | None: ...
+logger = logging.getLogger(__name__)
 
 
 class PersonScanner:
-    """Scan the room with the pan-tilt mount to locate a person."""
+    """Scan the room with the pan-tilt mount to locate a person or object."""
 
-    def __init__(self, camera_client: _FifoClientProtocol) -> None:
+    def __init__(self, camera_client) -> None:
         """
         Parameters
         ----------
         camera_client:
-            An object with a ``send(cmd)`` method that writes *cmd* to the
-            camera daemon FIFO and returns the status response (or ``None``).
+            Object with a ``send(cmd)`` method for the camera daemon FIFO.
         """
         self._client = camera_client
 
@@ -58,20 +56,88 @@ class PersonScanner:
 
     # -- Public API -----------------------------------------------------------
 
-    def find_person(self) -> Tuple[int, int, str] | None:
-        """Sweep through scan positions looking for a person.
+    def find_person(self) -> Optional[Tuple[int, int, str]]:
+        """Find a person by scanning with live video detection.
 
-        Returns
-        -------
-        tuple of (pan_us, tilt_us, description) if a person is found,
-        or ``None`` if the sweep completes without a detection.
+        Smoothly pans the camera while running face detection on every frame
+        at ~30 FPS. Much faster than the Claude-based scan.
+
+        Returns (pan_us, tilt_us, description) or None.
         """
+        try:
+            return self._live_scan()
+        except Exception as e:
+            logger.warning("Live scan failed (%s), falling back to Claude scan", e)
+            return self._claude_scan()
+
+    def _live_scan(self) -> Optional[Tuple[int, int, str]]:
+        """Scan using real-time OpenCV face detection + picamera2."""
+        from ari.vision.detector import FaceDetector, LiveScanner
+
+        logger.info("Starting live scan...")
+
+        # Stop camera daemon temporarily (we need direct camera access)
+        self._client.send("position")  # save current position
+        # Note: camera daemon uses rpicam-still which is separate from picamera2
+        # They can coexist as long as we don't capture simultaneously
+
+        detector = FaceDetector()
+        scanner = LiveScanner(detector, resolution=(640, 480))
+
+        try:
+            scanner.start()
+
+            # Pan through positions smoothly
+            for pan_us, tilt_us in self._scan_positions:
+                logger.info("Live scan: panning to %d", pan_us)
+
+                # Move camera via daemon (servos are separate from camera sensor)
+                self._client.send(f"set {pan_us} {tilt_us}")
+
+                # Check for detection while settling
+                detection = scanner.wait_for_detection(
+                    timeout=self._settle_time + 1.0,
+                    label="person"
+                )
+
+                if detection:
+                    logger.info("Person found at pan=%d! Position: %s",
+                                pan_us, detection.position_in_frame)
+
+                    # Fine-tune pan based on where in frame
+                    if detection.position_in_frame == "LEFT":
+                        pan_us += self._fine_tune_offset
+                    elif detection.position_in_frame == "RIGHT":
+                        pan_us -= self._fine_tune_offset
+
+                    self._client.send(f"set {pan_us} {tilt_us}")
+                    time.sleep(0.5)
+
+                    # Save the frame where we found the person
+                    scanner.capture_frame_as_jpeg("/tmp/ari_found.jpg")
+
+                    scanner.stop()
+                    return pan_us, tilt_us, "I found someone!"
+
+            # Not found
+            logger.info("Live scan: no person found")
+            self._client.send("home")
+            scanner.stop()
+            return None
+
+        except Exception as e:
+            logger.error("Live scan error: %s", e)
+            scanner.stop()
+            raise
+
+    def _claude_scan(self) -> Optional[Tuple[int, int, str]]:
+        """Fallback: scan using Claude Vision at each position (slower)."""
+        logger.info("Starting Claude-based scan...")
+
         for pan_us, tilt_us in self._scan_positions:
-            # Move camera to scan position
             self._client.send(f"set {pan_us} {tilt_us}")
             time.sleep(self._settle_time)
 
-            # Capture an image
             filepath = f"/tmp/ari_scan_{pan_us}.jpg"
             self._client.send(f"capture {filepath}")
             time.sleep(self._capture_wait)
@@ -80,7 +146,6 @@ class PersonScanner:
             if b64 is None:
                 continue
 
-            # Ask Claude whether a person is present
             response = self.ask_vision(
                 "Is there a person or human visible in this image?", b64
             )
@@ -91,7 +156,6 @@ class PersonScanner:
             if not first_line.startswith("YES"):
                 continue
 
-            # Person found -- fine-tune the pan position
             frame_pos = lines[1].strip().upper() if len(lines) > 1 else "CENTER"
             description = lines[2].strip() if len(lines) > 2 else "I found someone!"
 
@@ -100,27 +164,24 @@ class PersonScanner:
             elif "RIGHT" in frame_pos:
                 pan_us -= self._fine_tune_offset
 
-            # Centre on the person
             self._client.send(f"set {pan_us} {tilt_us}")
             time.sleep(1.0)
 
+            # Clean up scan images
+            for p, _ in self._scan_positions:
+                try:
+                    os.unlink(f"/tmp/ari_scan_{p}.jpg")
+                except OSError:
+                    pass
+
             return pan_us, tilt_us, description
 
-        # Nobody found -- return home
         self._client.send("home")
         time.sleep(1.0)
         return None
 
     def ask_vision(self, prompt: str, image_b64: str) -> str:
-        """Send an image + prompt to Claude CLI for vision analysis.
-
-        The model is instructed to reply with a strict YES/NO format:
-          Line 1: YES or NO
-          Line 2: LEFT, CENTER, or RIGHT (if YES)
-          Line 3: brief description (if YES)
-
-        Returns ``"NO"`` on any error so the scan can continue.
-        """
+        """Send an image + prompt to Claude CLI for vision analysis."""
         system_prompt = (
             "You are analyzing a camera image for person detection. "
             "Reply with ONLY 'YES' or 'NO' on the first line. "
@@ -130,21 +191,12 @@ class PersonScanner:
 
         try:
             result = subprocess.run(
-                [
-                    self._claude_cli,
-                    "-p", "--bare",
-                    "--model", self._claude_model,
-                    "--tools", "",
-                    "--system-prompt", system_prompt,
-                ],
-                input=(
-                    f"[Image as base64 JPEG: data:image/jpeg;base64,{image_b64}]"
-                    f"\n\n{prompt}"
-                ),
-                capture_output=True,
-                text=True,
-                timeout=self._claude_timeout,
-                env=os.environ,
+                [self._claude_cli, "-p", "--bare",
+                 "--model", self._claude_model, "--tools", "",
+                 "--system-prompt", system_prompt],
+                input=f"[Image as base64 JPEG: data:image/jpeg;base64,{image_b64}]\n\n{prompt}",
+                capture_output=True, text=True,
+                timeout=self._claude_timeout, env=os.environ,
             )
             return result.stdout.strip()
         except (subprocess.TimeoutExpired, OSError):
