@@ -27,7 +27,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 VOICES_DIR = os.path.expanduser("~/ari-assistant/voices")
-SIMILARITY_THRESHOLD = 0.75  # minimum cosine similarity to match
+SIMILARITY_THRESHOLD = 0.70  # minimum cosine similarity to match
 
 
 class VoiceID:
