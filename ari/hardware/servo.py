@@ -63,6 +63,7 @@ class PanTilt:
         # Track current position
         self._pan_us: int = self._pan_home
         self._tilt_us: int = self._tilt_home
+        self._holding: bool = False  # when True, don't auto-release PWM
 
         # Move to home on startup
         self._pca.channels[self._pan_ch].duty_cycle = self._us_to_duty(self._pan_home)
@@ -85,6 +86,7 @@ class PanTilt:
 
         Releases the PWM signal after reaching target to prevent servo buzzing.
         The servo holds position by friction when PWM is off.
+        Use hold() / release() for explicit control during scanning.
         """
         step = self._step_us if to_us > from_us else -self._step_us
         for us in range(from_us, to_us, step):
@@ -92,14 +94,25 @@ class PanTilt:
             time.sleep(self._step_delay)
         # Land on target, hold briefly, then release to prevent buzzing
         self._pca.channels[channel].duty_cycle = self._us_to_duty(to_us)
-        time.sleep(0.3)
-        self._pca.channels[channel].duty_cycle = 0
+        if not self._holding:
+            time.sleep(0.3)
+            self._pca.channels[channel].duty_cycle = 0
 
     def _clamp_pan(self, us: int) -> int:
         return max(self._pan_min, min(self._pan_max, us))
 
     def _clamp_tilt(self, us: int) -> int:
         return max(self._tilt_min, min(self._tilt_max, us))
+
+    def hold(self) -> None:
+        """Keep PWM active after moves (for scanning). Call release() when done."""
+        self._holding = True
+
+    def release(self) -> None:
+        """Release PWM on both channels to stop buzzing."""
+        self._holding = False
+        self._pca.channels[self._pan_ch].duty_cycle = 0
+        self._pca.channels[self._tilt_ch].duty_cycle = 0
 
     # -- Directional movement -------------------------------------------------
 

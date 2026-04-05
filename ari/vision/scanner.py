@@ -34,14 +34,17 @@ logger = logging.getLogger(__name__)
 class PersonScanner:
     """Scan the room with the pan-tilt mount to locate a person or object."""
 
-    def __init__(self, camera_client) -> None:
+    def __init__(self, camera_client=None, servo=None) -> None:
         """
         Parameters
         ----------
         camera_client:
             Object with a ``send(cmd)`` method for the camera daemon FIFO.
+        servo:
+            Optional PanTilt instance for direct servo control (used in live scan).
         """
         self._client = camera_client
+        self._servo = servo
 
         vcfg = cfg["vision"]
         self._scan_positions: list[list[int]] = vcfg["scan_positions"]
@@ -87,12 +90,19 @@ class PersonScanner:
         try:
             scanner.start()
 
+            # Use direct servo if available, otherwise create one
+            servo = self._servo
+            if servo is None:
+                from ari.hardware.servo import PanTilt
+                servo = PanTilt()
+
+            # Hold servos during scan so they don't drift between positions
+            servo.hold()
+
             # Pan through positions smoothly
             for pan_us, tilt_us in self._scan_positions:
                 logger.info("Live scan: panning to %d", pan_us)
-
-                # Move camera via daemon (servos are separate from camera sensor)
-                self._client.send(f"set {pan_us} {tilt_us}")
+                servo.set_position(pan_us, tilt_us)
 
                 # Check for detection while settling
                 detection = scanner.wait_for_detection(
@@ -104,29 +114,30 @@ class PersonScanner:
                     logger.info("Person found at pan=%d! Position: %s",
                                 pan_us, detection.position_in_frame)
 
-                    # Fine-tune pan based on where in frame
                     if detection.position_in_frame == "LEFT":
                         pan_us += self._fine_tune_offset
                     elif detection.position_in_frame == "RIGHT":
                         pan_us -= self._fine_tune_offset
 
-                    self._client.send(f"set {pan_us} {tilt_us}")
+                    servo.set_position(pan_us, tilt_us)
                     time.sleep(0.5)
-
-                    # Save the frame where we found the person
                     scanner.capture_frame_as_jpeg("/tmp/ari_found.jpg")
 
+                    servo.release()
                     scanner.stop()
                     return pan_us, tilt_us, "I found someone!"
 
             # Not found
             logger.info("Live scan: no person found")
-            self._client.send("home")
+            servo.home()
+            servo.release()
             scanner.stop()
             return None
 
         except Exception as e:
             logger.error("Live scan error: %s", e)
+            if servo:
+                servo.release()
             scanner.stop()
             raise
 

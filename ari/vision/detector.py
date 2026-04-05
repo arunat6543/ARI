@@ -82,6 +82,7 @@ class FaceDetector:
     """Fast face detection using OpenCV Haar cascades.
 
     Runs at ~30 FPS on Pi 5 at 640x480. No model download required.
+    Limited: only works with frontal upright faces in good lighting.
     """
 
     def __init__(self):
@@ -93,33 +94,67 @@ class FaceDetector:
         logger.info("Face detector loaded (Haar cascade)")
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        """Detect faces in an RGB or BGR frame.
-
-        Args:
-            frame: numpy array (H, W, 3) — RGB or BGR image
-
-        Returns:
-            List of Detection objects for each face found.
-        """
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         h, w = gray.shape[:2]
 
         faces = self.face_cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30),
+            gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30),
         )
 
+        return [
+            Detection("person", 0.9, x, y, fw, fh, w, h)
+            for (x, y, fw, fh) in faces
+        ]
+
+
+class YoloDetector:
+    """Object detection using YOLOv8-nano.
+
+    Detects 80 object types (person, chair, cup, book, etc.).
+    Runs at ~3-5 FPS on Pi 5 CPU. Much more robust than Haar cascades —
+    handles angles, low light, partial occlusion.
+    """
+
+    def __init__(self, model_path: str = "yolov8n.pt", confidence: float = 0.25):
+        from ultralytics import YOLO
+        self._model = YOLO(model_path)
+        self._confidence = confidence
+        logger.info("YOLO detector loaded: %s (conf=%.0f%%)", model_path, confidence * 100)
+
+    def detect(self, frame: np.ndarray, classes: list[str] | None = None) -> list[Detection]:
+        """Detect objects in an RGB frame.
+
+        Args:
+            frame: numpy array (H, W, 3) — RGB image
+            classes: optional filter — only return these class names (e.g., ["person"])
+
+        Returns:
+            List of Detection objects.
+        """
+        h, w = frame.shape[:2]
+        # Convert RGB to BGR for YOLO
+        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        results = self._model(bgr, verbose=False, conf=self._confidence)
+
         detections = []
-        for (x, y, fw, fh) in faces:
-            det = Detection(
-                label="person",
-                confidence=0.9,  # Haar doesn't provide confidence
-                x=x, y=y, w=fw, h=fh,
-                frame_width=w, frame_height=h,
-            )
-            detections.append(det)
+        for r in results:
+            for box in r.boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                name = self._model.names[cls_id]
+
+                if classes and name not in classes:
+                    continue
+
+                x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+                det = Detection(
+                    label=name,
+                    confidence=conf,
+                    x=x1, y=y1,
+                    w=x2 - x1, h=y2 - y1,
+                    frame_width=w, frame_height=h,
+                )
+                detections.append(det)
 
         return detections
 
