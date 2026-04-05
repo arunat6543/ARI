@@ -380,19 +380,29 @@ class AriDaemon:
         self.speaker.speak_streaming(reply)
 
     def _handle_conversation(self, text: str) -> None:
-        """General conversation -- text only, with session continuity."""
+        """General conversation — streams Claude → TTS for minimum latency.
+
+        Speaks the first sentence as soon as Claude generates it,
+        while Claude continues generating the rest.
+        """
         print("Thinking...", flush=True)
-        # Include speaker name so Claude knows who it's talking to
         if self._current_speaker:
             prompt = f"[{self._current_speaker} says]: {text}"
         else:
             prompt = text
-        reply, sid = self.claude.ask(prompt, session_id=self._session_id)
-        self._session_id = sid
-        if sid:
-            print(f"  [session: {sid[:8]}...]", flush=True)
-        print(f"  Ari: {reply}", flush=True)
-        self.speaker.speak_streaming(reply)
+
+        # Stream: Claude generates → sentences yield → each spoken immediately
+        self.mic.mute()
+        try:
+            reply = self.claude.ask_and_speak(
+                prompt, self.speaker,
+                session_id=self._session_id,
+            )
+            print(f"  Ari: {reply}", flush=True)
+        finally:
+            import time
+            time.sleep(0.2)
+            self.mic.unmute()
 
     # ------------------------------------------------------------------ #
     # FIFO listener
