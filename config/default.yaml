@@ -80,10 +80,10 @@ camera:
 servo:
   pan_channel: 0
   tilt_channel: 1
-  pan_home: 1600                   # microseconds
-  tilt_home: 2400
-  pan_min: 500
-  pan_max: 2500
+  pan_home: 600                    # microseconds (recalibrated after base mount)
+  tilt_home: 1800
+  pan_min: 500                     # right limit (camera wire)
+  pan_max: 1100                    # ~45° left of home (camera wire limit)
   tilt_min: 1500                   # limited by camera cable
   tilt_max: 2800
   step_us: 5                       # microseconds per step
@@ -126,11 +126,11 @@ vision:
     "turn left": "left"
     "turn right": "right"
   scan_positions:
-    - [800, 2400]                  # far right
-    - [1200, 2400]                 # right
-    - [1600, 2400]                 # center
-    - [2000, 2400]                 # left
-    - [2400, 2400]                 # far left
+    - [500, 1800]                  # right limit
+    - [600, 1800]                  # home/center
+    - [750, 1800]                  # slight left
+    - [900, 1800]                  # left
+    - [1100, 1800]                 # left limit
   scan_settle_time: 3.0            # seconds to wait after moving
   scan_capture_wait: 2.5           # seconds to wait after capture
   fine_tune_offset: 150            # pan adjustment when person is off-center

@@ -60,14 +60,13 @@ class PanTilt:
         self._pca = PCA9685(self._i2c)
         self._pca.frequency = scfg["pca9685_frequency"]
 
-        # Track current position
-        self._pan_us: int = self._pan_home
-        self._tilt_us: int = self._tilt_home
-        self._holding: bool = False  # when True, don't auto-release PWM
+        # Track current position — start from midpoint to avoid jumping
+        self._pan_us: int = 1500  # servo midpoint
+        self._tilt_us: int = 1500
+        self._holding: bool = False
 
-        # Move to home on startup
-        self._pca.channels[self._pan_ch].duty_cycle = self._us_to_duty(self._pan_home)
-        self._pca.channels[self._tilt_ch].duty_cycle = self._us_to_duty(self._tilt_home)
+        # DON'T move to home on startup — wait for explicit command
+        # This prevents the violent jump on init
 
     # -- Low-level helpers ----------------------------------------------------
 

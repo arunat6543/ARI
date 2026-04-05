@@ -141,7 +141,8 @@ class PersonRecognizer:
             f"I have two images. The first is a reference photo of a person named '{name}'. "
             f"The second is a live camera image. "
             f"Is the person in the live image the SAME person as in the reference photo? "
-            f"Reply with ONLY 'YES' or 'NO' on the first line. Nothing else."
+            f"If the live image does not clearly show a face, reply 'UNCLEAR'. "
+            f"Reply with ONLY 'YES', 'NO', or 'UNCLEAR' on the first line. Nothing else."
             f"\n\n[Reference photo of {name}: data:image/jpeg;base64,{ref_b64}]"
             f"\n\n[Live camera image: data:image/jpeg;base64,{current_b64}]"
         )
@@ -158,8 +159,10 @@ class PersonRecognizer:
                 capture_output=True, text=True,
                 timeout=self._claude_timeout, env=os.environ,
             )
-            answer = result.stdout.strip().upper()
+            answer = result.stdout.strip().split("\n")[0].strip().upper()
             logger.info("Compare %s: %s", name, answer)
+            if answer.startswith("UNCLEAR"):
+                return None  # can't tell — need to return None vs False
             return answer.startswith("YES")
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.error("Claude compare error: %s", e)
