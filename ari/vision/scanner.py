@@ -27,6 +27,7 @@ from typing import Optional, Tuple
 
 from ari.config import cfg
 from ari.vision.camera import image_to_base64
+from ari.vision.recognizer import PersonRecognizer, extract_person_name
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class PersonScanner:
         """
         self._client = camera_client
         self._servo = servo
+        self._recognizer = PersonRecognizer()
 
         vcfg = cfg["vision"]
         self._scan_positions: list[list[int]] = vcfg["scan_positions"]
@@ -59,32 +61,33 @@ class PersonScanner:
 
     # -- Public API -----------------------------------------------------------
 
-    def find_person(self) -> Optional[Tuple[int, int, str]]:
+    @property
+    def recognizer(self) -> PersonRecognizer:
+        """Access the person recognizer for registration etc."""
+        return self._recognizer
+
+    def find_person(self, target_name: str | None = None) -> Optional[Tuple[int, int, str]]:
         """Find a person by scanning with live video detection.
 
-        Smoothly pans the camera while running face detection on every frame
-        at ~30 FPS. Much faster than the Claude-based scan.
+        Args:
+            target_name: if set, only stop when this specific person is found
+                        (uses reference photo comparison via Claude Vision)
 
         Returns (pan_us, tilt_us, description) or None.
         """
         try:
-            return self._live_scan()
+            return self._live_scan(target_name=target_name)
         except Exception as e:
             logger.warning("Live scan failed (%s), falling back to Claude scan", e)
             return self._claude_scan()
 
-    def _live_scan(self) -> Optional[Tuple[int, int, str]]:
-        """Scan using real-time OpenCV face detection + picamera2."""
-        from ari.vision.detector import FaceDetector, LiveScanner
+    def _live_scan(self, target_name: str | None = None) -> Optional[Tuple[int, int, str]]:
+        """Scan using real-time YOLO detection + optional identity verification."""
+        from ari.vision.detector import YoloDetector, LiveScanner
 
-        logger.info("Starting live scan...")
+        logger.info("Starting live scan (target=%s)...", target_name or "any person")
 
-        # Stop camera daemon temporarily (we need direct camera access)
-        self._client.send("position")  # save current position
-        # Note: camera daemon uses rpicam-still which is separate from picamera2
-        # They can coexist as long as we don't capture simultaneously
-
-        detector = FaceDetector()
+        detector = YoloDetector(confidence=0.25)
         scanner = LiveScanner(detector, resolution=(640, 480))
 
         try:
@@ -96,39 +99,57 @@ class PersonScanner:
                 from ari.hardware.servo import PanTilt
                 servo = PanTilt()
 
-            # Hold servos during scan so they don't drift between positions
+            # Hold servos during scan
             servo.hold()
 
-            # Pan through positions smoothly
+            # Pan through positions
             for pan_us, tilt_us in self._scan_positions:
                 logger.info("Live scan: panning to %d", pan_us)
                 servo.set_position(pan_us, tilt_us)
+                time.sleep(1)  # let image stabilize
 
-                # Check for detection while settling
-                detection = scanner.wait_for_detection(
-                    timeout=self._settle_time + 1.0,
-                    label="person"
-                )
+                # Check for person detection (5 seconds per position for YOLO)
+                for _ in range(25):
+                    time.sleep(0.2)
+                    detections = [d for d in scanner.latest_detections
+                                  if d.label == "person"]
 
-                if detection:
-                    logger.info("Person found at pan=%d! Position: %s",
-                                pan_us, detection.position_in_frame)
+                    if not detections:
+                        continue
 
-                    if detection.position_in_frame == "LEFT":
+                    det = detections[0]
+                    logger.info("Person detected at pan=%d (%s, %d%%)",
+                                pan_us, det.position_in_frame, det.confidence * 100)
+
+                    # If looking for a specific person, verify identity
+                    if target_name and self._recognizer.has_reference(target_name):
+                        frame = scanner.latest_frame
+                        if frame is not None:
+                            identified = self._recognizer.identify(frame, target_name)
+                            if not identified:
+                                logger.info("Person found but not %s, continuing...",
+                                            target_name)
+                                break  # not the right person, try next position
+                            logger.info("Confirmed: this is %s!", target_name)
+
+                    # Fine-tune pan
+                    if det.position_in_frame == "LEFT":
                         pan_us += self._fine_tune_offset
-                    elif detection.position_in_frame == "RIGHT":
+                    elif det.position_in_frame == "RIGHT":
                         pan_us -= self._fine_tune_offset
 
                     servo.set_position(pan_us, tilt_us)
                     time.sleep(0.5)
                     scanner.capture_frame_as_jpeg("/tmp/ari_found.jpg")
 
+                    desc = f"I found {target_name}!" if target_name else "I found someone!"
                     servo.release()
                     scanner.stop()
-                    return pan_us, tilt_us, "I found someone!"
+                    return pan_us, tilt_us, desc
 
             # Not found
-            logger.info("Live scan: no person found")
+            logger.info("Live scan: %s not found",
+                        target_name or "no person")
             servo.home()
             servo.release()
             scanner.stop()
