@@ -37,6 +37,7 @@ from ari.config import cfg
 from ari.audio.microphone import Microphone
 from ari.audio.transcriber import Transcriber
 from ari.audio.speaker import Speaker
+from ari.audio.voice_id import VoiceID
 from ari.brain.claude_client import ClaudeClient
 from ari.brain.intent import detect_intent, contains_phrase
 from ari.vision.scanner import PersonScanner
@@ -87,6 +88,14 @@ class AriDaemon:
         self.camera = FifoClient(self._camera_fifo)
         self.scanner = PersonScanner(self.camera)
 
+        print("Loading voice ID...", flush=True)
+        try:
+            self.voice_id = VoiceID()
+            print(f"  Registered voices: {self.voice_id.known_voices}", flush=True)
+        except Exception as exc:
+            log.warning("Voice ID failed to load: %s", exc)
+            self.voice_id = None
+
         # -- Wake / sleep config ----------------------------------------------
         wake_cfg = cfg["wake"]
         self._wake_phrases: list[str] = wake_cfg["phrases"]
@@ -112,6 +121,7 @@ class AriDaemon:
         self._state = State.SLEEPING
         self._last_speech_time: float = 0.0
         self._session_id: str | None = None
+        self._current_speaker: str | None = None  # identified by voice ID
 
     # ------------------------------------------------------------------ #
     # Properties
@@ -228,13 +238,21 @@ class AriDaemon:
             if audio is None:
                 continue
 
+            # Identify who is speaking (run on same audio).
+            speaker = self._identify_speaker(audio)
+            if speaker != self._current_speaker:
+                self._current_speaker = speaker
+                if speaker:
+                    print(f"  Speaker: {speaker}", flush=True)
+
             # Transcribe.
             text = self.transcriber.transcribe(audio)
             if not text or len(text.strip()) < 2:
                 continue
 
             self._last_speech_time = time.time()
-            print(f"  User: {text}", flush=True)
+            speaker_label = self._current_speaker or "Someone"
+            print(f"  {speaker_label}: {text}", flush=True)
 
             # Detect intent and dispatch.
             result = detect_intent(text)
@@ -256,6 +274,37 @@ class AriDaemon:
             else:
                 # Default: conversation
                 self._handle_conversation(text)
+
+    # ------------------------------------------------------------------ #
+    # Speaker identification
+    # ------------------------------------------------------------------ #
+
+    def _identify_speaker(self, audio_16k) -> str | None:
+        """Identify who is speaking from audio. Returns name or None."""
+        if self.voice_id is None:
+            return None
+
+        try:
+            import numpy as np
+
+            # Strip silence — only keep chunks above noise threshold
+            chunk_size = int(16000 * 0.1)  # 100ms chunks at 16kHz
+            speech_chunks = []
+            for i in range(0, len(audio_16k) - chunk_size, chunk_size):
+                chunk = audio_16k[i:i + chunk_size]
+                rms = np.sqrt(np.mean(chunk.astype(np.float32) ** 2))
+                if rms > 0.006:  # ~200 in int16 scale / 32768
+                    speech_chunks.append(chunk)
+
+            if not speech_chunks or len(speech_chunks) < 3:
+                return self._current_speaker  # not enough speech, keep last
+
+            speech_only = np.concatenate(speech_chunks)
+            name, confidence = self.voice_id.identify(speech_only)
+            return name
+        except Exception as exc:
+            log.debug("Voice ID error: %s", exc)
+            return self._current_speaker
 
     # ------------------------------------------------------------------ #
     # Intent handlers
@@ -314,14 +363,16 @@ class AriDaemon:
     def _handle_vision(self, text: str) -> None:
         """Capture an image and send it to Claude along with the user's text."""
         print("Capturing for vision...", flush=True)
+        speaker_prefix = f"[{self._current_speaker} says]: " if self._current_speaker else ""
         image_path = capture_and_resize()
         if image_path:
             reply, sid = self.claude.ask(
-                text, image_path=image_path, session_id=self._session_id,
+                f"{speaker_prefix}{text}",
+                image_path=image_path, session_id=self._session_id,
             )
         else:
             reply, sid = self.claude.ask(
-                f"(I tried to take a photo but the camera failed.) {text}",
+                f"{speaker_prefix}(I tried to take a photo but the camera failed.) {text}",
                 session_id=self._session_id,
             )
         self._session_id = sid
@@ -331,7 +382,12 @@ class AriDaemon:
     def _handle_conversation(self, text: str) -> None:
         """General conversation -- text only, with session continuity."""
         print("Thinking...", flush=True)
-        reply, sid = self.claude.ask(text, session_id=self._session_id)
+        # Include speaker name so Claude knows who it's talking to
+        if self._current_speaker:
+            prompt = f"[{self._current_speaker} says]: {text}"
+        else:
+            prompt = text
+        reply, sid = self.claude.ask(prompt, session_id=self._session_id)
         self._session_id = sid
         if sid:
             print(f"  [session: {sid[:8]}...]", flush=True)
