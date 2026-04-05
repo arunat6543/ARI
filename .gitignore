@@ -16,7 +16,9 @@ __pycache__/
 
 # Temp files
 *.wav
-*.jpg
+
+# Keep reference face photos
+!faces/*.jpg
 
 # OS
 .DS_Store
