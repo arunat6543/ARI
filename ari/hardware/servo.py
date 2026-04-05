@@ -81,13 +81,19 @@ class PanTilt:
         return int(us / 20_000 * 65_535)
 
     def _move_channel(self, channel: int, from_us: int, to_us: int) -> None:
-        """Smoothly sweep *channel* from *from_us* to *to_us* in small steps."""
+        """Smoothly sweep *channel* from *from_us* to *to_us*, then release.
+
+        Releases the PWM signal after reaching target to prevent servo buzzing.
+        The servo holds position by friction when PWM is off.
+        """
         step = self._step_us if to_us > from_us else -self._step_us
         for us in range(from_us, to_us, step):
             self._pca.channels[channel].duty_cycle = self._us_to_duty(us)
             time.sleep(self._step_delay)
-        # Ensure we land exactly on the target
+        # Land on target, hold briefly, then release to prevent buzzing
         self._pca.channels[channel].duty_cycle = self._us_to_duty(to_us)
+        time.sleep(0.3)
+        self._pca.channels[channel].duty_cycle = 0
 
     def _clamp_pan(self, us: int) -> int:
         return max(self._pan_min, min(self._pan_max, us))
