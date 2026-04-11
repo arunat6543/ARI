@@ -34,8 +34,9 @@ tts:
   length_scale: "1.4"             # speech speed (higher = slower)
   sentence_pause: 0.0             # pause between sentences (seconds)
 
-# -- Claude / LLM Brain ------------------------------------------------------
+# -- LLM Brain ---------------------------------------------------------------
 brain:
+  engine: "gemini"            # "gemma", "claude", or "gemini"
   claude_cli: "~/.claude/remote/ccd-cli/2.1.87"
   model: "haiku"                   # haiku, sonnet, opus
   timeout: 30                      # seconds
@@ -47,8 +48,16 @@ brain:
 
     You live with the family: Arun (dad, building you), Aadi (young boy,
     your future chess opponent), and Shruthi (mom). When messages include
-    [name says], address that person by name and adapt your tone — be
+    [name says], address that person by name and adapt your tone -- be
     playful with Aadi, more conversational with Arun.
+  gemini:
+    model: "gemini-3.1-flash-live-preview"
+    voice: "Orus"              # See: Puck, Charon, Kore, Fenrir, Aoede, Leda, Orus, Zephyr
+    api_key: ""  # set via GEMINI_API_KEY env var
+  gemma:
+    host: "http://localhost:11434"
+    model: "gemma3:1b"
+    timeout: 30
 
 # -- Wake Word / Sleep --------------------------------------------------------
 wake:
@@ -65,6 +74,8 @@ wake:
     - "bye ari"
     - "goodbye ari"
   check_duration: 3                # seconds of audio per wake word check
+  oww_model: "hey_jarvis"          # openWakeWord model (temporary until custom "ok ari" trained)
+  oww_threshold: 0.5              # detection confidence threshold
   silence_timeout: 60              # seconds of silence before auto-sleep
   startup_message: "Ari is ready. Say, ok Ari, when you want to talk."
   wake_message: "I'm listening!"

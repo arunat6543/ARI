@@ -27,6 +27,7 @@ import subprocess
 import threading
 from typing import Generator, Optional
 
+from ari.brain.base import Brain
 from ari.config import cfg
 from ari.vision.camera import image_to_base64
 
@@ -35,7 +36,7 @@ log = logging.getLogger(__name__)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 
-class ClaudeClient:
+class ClaudeClient(Brain):
     """Wrapper around Claude CLI with streaming support."""
 
     def __init__(self) -> None:

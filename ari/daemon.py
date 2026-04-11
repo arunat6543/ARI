@@ -38,7 +38,8 @@ from ari.audio.microphone import Microphone
 from ari.audio.transcriber import Transcriber
 from ari.audio.speaker import Speaker
 from ari.audio.voice_id import VoiceID
-from ari.brain.claude_client import ClaudeClient
+from ari.audio.wakeword import WakeWordDetector
+from ari.brain import create_brain
 from ari.brain.intent import detect_intent, contains_phrase
 from ari.vision.scanner import PersonScanner
 from ari.vision.camera import capture_and_resize, image_to_base64
@@ -84,7 +85,7 @@ class AriDaemon:
         self.transcriber = Transcriber()
 
         self.speaker = Speaker(mic=self.mic)
-        self.claude = ClaudeClient()
+        self.brain = create_brain()
         self.camera = FifoClient(self._camera_fifo)
         self.scanner = PersonScanner(self.camera)
 
@@ -95,6 +96,15 @@ class AriDaemon:
         except Exception as exc:
             log.warning("Voice ID failed to load: %s", exc)
             self.voice_id = None
+
+        # -- Wake word detector (lightweight, replaces Whisper for wake) ----
+        print("Loading wake word detector...", flush=True)
+        try:
+            self.wakeword = WakeWordDetector()
+            print(f"  Wake word ready", flush=True)
+        except Exception as exc:
+            log.warning("Wake word detector failed: %s, falling back to Whisper", exc)
+            self.wakeword = None
 
         # -- Wake / sleep config ----------------------------------------------
         wake_cfg = cfg["wake"]
@@ -116,6 +126,14 @@ class AriDaemon:
             "I'll go back to sleep now. Call me if you need me!",
         )
         self._goodbye_msg: str = wake_cfg.get("goodbye_message", "Goodbye!")
+
+        # -- Engine mode ------------------------------------------------------
+        self._engine: str = cfg["brain"].get("engine", "claude")
+        self._is_gemini_live: bool = self._engine == "gemini"
+        if self._is_gemini_live:
+            print(f"Brain: Gemini Live (speech-to-speech)", flush=True)
+        else:
+            print(f"Brain: {self._engine} (text pipeline)", flush=True)
 
         # -- Runtime state ----------------------------------------------------
         self._state = State.SLEEPING
@@ -177,16 +195,21 @@ class AriDaemon:
 
     def sleep_loop(self) -> None:
         """Passive mode -- listen for wake phrases only."""
-        print("Sleeping -- waiting for wake word...", flush=True)
+        if self.wakeword is not None:
+            self._sleep_loop_wakeword()
+        else:
+            self._sleep_loop_whisper()
+
+    def _sleep_loop_wakeword(self) -> None:
+        """Sleep loop using openWakeWord (fast, <6ms per check)."""
+        print("Sleeping -- waiting for wake word (openWakeWord)...", flush=True)
         self.write_status("sleeping")
 
         while self._state == State.SLEEPING:
-            # Skip recording while mic is muted (e.g. during TTS playback).
             if self.mic.is_muted:
                 time.sleep(0.5)
                 continue
 
-            # Record a short chunk and check for speech.
             try:
                 audio = self.mic.record_chunk(self._wake_check_duration)
             except Exception as exc:
@@ -197,7 +220,37 @@ class AriDaemon:
             if not self.mic._has_speech_threshold(audio):
                 continue
 
-            # Speech detected -- transcribe and check for wake phrase.
+            # Resample to 16kHz for openWakeWord
+            audio_16k = Microphone.resample(
+                audio, self.mic._sample_rate, self.mic._whisper_rate,
+            )
+
+            if self.wakeword.detect(audio_16k):
+                print("Wake word detected!", flush=True)
+                self.state = State.AWAKE
+                self._last_speech_time = time.time()
+                return
+
+    def _sleep_loop_whisper(self) -> None:
+        """Fallback sleep loop using Whisper (slower but more flexible)."""
+        print("Sleeping -- waiting for wake word (Whisper)...", flush=True)
+        self.write_status("sleeping")
+
+        while self._state == State.SLEEPING:
+            if self.mic.is_muted:
+                time.sleep(0.5)
+                continue
+
+            try:
+                audio = self.mic.record_chunk(self._wake_check_duration)
+            except Exception as exc:
+                print(f"  Mic error: {exc}", flush=True)
+                time.sleep(1)
+                continue
+
+            if not self.mic._has_speech_threshold(audio):
+                continue
+
             audio_16k = Microphone.resample(
                 audio, self.mic._sample_rate, self.mic._whisper_rate,
             )
@@ -223,6 +276,32 @@ class AriDaemon:
         self.write_status("awake")
         self.speaker.speak(self._wake_msg)
 
+        if self._is_gemini_live:
+            self._awake_loop_gemini()
+        else:
+            self._awake_loop_text()
+
+    def _awake_loop_gemini(self) -> None:
+        """Gemini Live mode: skip Whisper, send audio directly to Gemini."""
+        while self._state == State.AWAKE:
+            if time.time() - self._last_speech_time > self._silence_timeout:
+                print("Silence timeout -- going back to sleep", flush=True)
+                self.speaker.speak(self._timeout_msg)
+                self.state = State.SLEEPING
+                return
+
+            audio = self.mic.record_speech(
+                stop_flag_fn=lambda: self._state != State.AWAKE,
+            )
+            if audio is None:
+                continue
+
+            self._last_speech_time = time.time()
+            print("Sending audio to Gemini Live...", flush=True)
+            self._handle_gemini_live(audio)
+
+    def _awake_loop_text(self) -> None:
+        """Text pipeline mode (Gemma/Claude): Whisper -> intent -> brain."""
         while self._state == State.AWAKE:
             # Check silence timeout.
             if time.time() - self._last_speech_time > self._silence_timeout:
@@ -346,7 +425,7 @@ class AriDaemon:
             image_path = capture_and_resize()
             if image_path:
                 print("Describing what I found...", flush=True)
-                reply, sid = self.claude.ask(
+                reply, sid = self.brain.ask(
                     f"I just scanned around with my camera and found someone. "
                     f"The user asked me to find them. Describe who you see in "
                     f"the image and greet them naturally. The user said: {text}",
@@ -366,12 +445,12 @@ class AriDaemon:
         speaker_prefix = f"[{self._current_speaker} says]: " if self._current_speaker else ""
         image_path = capture_and_resize()
         if image_path:
-            reply, sid = self.claude.ask(
+            reply, sid = self.brain.ask(
                 f"{speaker_prefix}{text}",
                 image_path=image_path, session_id=self._session_id,
             )
         else:
-            reply, sid = self.claude.ask(
+            reply, sid = self.brain.ask(
                 f"{speaker_prefix}(I tried to take a photo but the camera failed.) {text}",
                 session_id=self._session_id,
             )
@@ -394,11 +473,27 @@ class AriDaemon:
         # Stream: Claude generates → sentences yield → each spoken immediately
         self.mic.mute()
         try:
-            reply = self.claude.ask_and_speak(
+            reply = self.brain.ask_and_speak(
                 prompt, self.speaker,
                 session_id=self._session_id,
             )
             print(f"  Ari: {reply}", flush=True)
+        finally:
+            import time
+            time.sleep(0.2)
+            self.mic.unmute()
+
+    def _handle_gemini_live(self, audio_16k) -> None:
+        """Send raw audio to Gemini Live, play audio response directly."""
+        print("Gemini Live: sending audio...", flush=True)
+        aplay_device = cfg["audio"]["aplay_device"]
+        self.mic.mute()
+        try:
+            self.brain.run_live_turn(audio_16k, aplay_device)
+            print("  Gemini Live: response played", flush=True)
+        except Exception as e:
+            print(f"  Gemini Live error: {e}", flush=True)
+            self.speaker.speak("Sorry, I had trouble connecting.")
         finally:
             import time
             time.sleep(0.2)

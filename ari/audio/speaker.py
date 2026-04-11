@@ -3,7 +3,8 @@
 Optimized for low latency:
   - Streams Piper raw audio directly to aplay (no temp files)
   - Audio starts playing while Piper is still generating
-  - speak_streaming() splits into sentences and plays each immediately
+  - _speak_stream() handles one sentence at a time
+  - _speak_multi() keeps a single aplay alive across sentences
 
 Usage::
 
@@ -18,6 +19,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -78,28 +80,35 @@ class Speaker:
         if self._mic is not None:
             self._mic.unmute()
 
-    # -- Streaming speech (low latency) ----------------------------------------
+    # -- Piper command builder ------------------------------------------------
+
+    def _piper_cmd(self) -> list[str]:
+        return [
+            self._piper_bin, "--model", self._model,
+            "--speaker", self._speaker_id,
+            "--length-scale", self._length_scale,
+            "--output_raw",
+        ]
+
+    def _aplay_cmd(self) -> list[str]:
+        return [
+            "aplay", "-r", str(self._sample_rate), "-f", "S16_LE",
+            "-t", "raw", "-c", "1", "-D", self._aplay_device,
+        ]
+
+    # -- Single sentence (used by speak() and as fallback) --------------------
 
     def _speak_stream(self, text: str) -> None:
-        """Stream Piper raw output directly to aplay.
-
-        Audio starts playing as soon as Piper generates the first chunk,
-        before the full text is synthesized. This saves 1-2 seconds
-        compared to generating a WAV file first.
-        """
+        """Stream a single sentence: Piper -> aplay."""
         try:
             piper = subprocess.Popen(
-                [self._piper_bin, "--model", self._model,
-                 "--speaker", self._speaker_id,
-                 "--length-scale", self._length_scale,
-                 "--output_raw"],
+                self._piper_cmd(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
             aplay = subprocess.Popen(
-                ["aplay", "-r", str(self._sample_rate), "-f", "S16_LE",
-                 "-t", "raw", "-c", "1", "-D", self._aplay_device],
+                self._aplay_cmd(),
                 stdin=piper.stdout,
                 stderr=subprocess.DEVNULL,
             )
@@ -119,6 +128,61 @@ class Speaker:
         except Exception as e:
             log.error("TTS stream error: %s", e)
 
+    # -- Multi-sentence: one aplay, multiple Piper calls ----------------------
+
+    def _speak_multi(self, sentences: list[str]) -> None:
+        """Speak multiple sentences through a single aplay process.
+
+        One aplay stays alive the whole time. Each sentence spawns a
+        Piper process whose raw output is pumped into aplay's stdin
+        via a background thread. No gap between sentences.
+        """
+        try:
+            aplay = subprocess.Popen(
+                self._aplay_cmd(),
+                stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+
+            for sentence in sentences:
+                piper = subprocess.Popen(
+                    self._piper_cmd(),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+
+                # Feed text to Piper
+                piper.stdin.write(sentence.encode("utf-8"))
+                piper.stdin.close()
+
+                # Pump Piper stdout -> aplay stdin in chunks
+                while True:
+                    chunk = piper.stdout.read(4096)
+                    if not chunk:
+                        break
+                    try:
+                        aplay.stdin.write(chunk)
+                    except BrokenPipeError:
+                        log.error("aplay died mid-stream")
+                        piper.kill()
+                        return
+
+                piper.wait(timeout=30)
+
+            # Done with all sentences
+            aplay.stdin.close()
+            aplay.wait(timeout=30)
+
+        except subprocess.TimeoutExpired:
+            log.error("TTS multi-stream timed out")
+            try:
+                aplay.kill()
+            except Exception:
+                pass
+        except Exception as e:
+            log.error("TTS multi-stream error: %s", e)
+
     # -- Public API -----------------------------------------------------------
 
     def speak(self, text: str) -> None:
@@ -132,14 +196,13 @@ class Speaker:
         try:
             self._speak_stream(text)
         finally:
-            time.sleep(0.2)  # small buffer after speaking
+            time.sleep(0.2)
             self._unmute_mic()
 
     def speak_streaming(self, text: str) -> None:
-        """Split text into sentences and speak each one immediately.
+        """Split text into sentences and speak seamlessly.
 
-        Each sentence is streamed (Piper → aplay) so audio starts fast.
-        Sentences are spoken sequentially but each one streams internally.
+        Uses a single aplay process for all sentences -- no gaps.
         """
         text = text.strip()
         if not text:
@@ -152,8 +215,7 @@ class Speaker:
         log.info("Streaming %d sentence(s): %s", len(sentences), text[:80])
         self._mute_mic()
         try:
-            for sentence in sentences:
-                self._speak_stream(sentence)
+            self._speak_multi(sentences)
         finally:
             time.sleep(0.2)
             self._unmute_mic()
