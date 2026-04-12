@@ -11,7 +11,7 @@ audio:
   whisper_sample_rate: 16000
   mic_device: 0                    # sounddevice index (0 = first input)
   aplay_device: "plughw:3,0"      # ALSA device for speaker output
-  silence_threshold: 400           # RMS threshold to detect speech
+  silence_threshold: 1000           # RMS threshold to detect speech
   conversation_silence: 1.5        # seconds of silence to end an utterance
   max_recording_duration: 30       # max seconds per utterance
   min_recording_duration: 0.3      # min seconds to count as speech
@@ -62,12 +62,7 @@ brain:
 # -- Wake Word / Sleep --------------------------------------------------------
 wake:
   phrases:
-    - "ok ari"
-    - "okay ari"
-    - "okay, ari"
-    - "ok, ari"
-    - "hey ari"
-    - "hey, ari"
+    - "hello"
   sleep_phrases:
     - "go back to sleep"
     - "stop listening"
@@ -76,7 +71,7 @@ wake:
   check_duration: 3                # seconds of audio per wake word check
   oww_model: "hey_jarvis"          # openWakeWord model (temporary until custom "ok ari" trained)
   oww_threshold: 0.5              # detection confidence threshold
-  silence_timeout: 60              # seconds of silence before auto-sleep
+  silence_timeout: 15              # seconds of silence before auto-sleep
   startup_message: "Ari is ready. Say, ok Ari, when you want to talk."
   wake_message: "I'm listening!"
   sleep_message: "Okay, going back to sleep. Call me when you need me!"
