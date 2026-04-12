@@ -173,6 +173,13 @@ The robot arm is a **Freenove Robot Arm Kit (FNK0036)** for Raspberry Pi.
 | A4988 Microstepping | 10, 24, 23 |
 | A4988 Direction | 14, 15, 27 |
 | A4988 Step | 4, 17, 22 |
+
+### Confirmed Motor Pin Mapping
+| Motor | Step GPIO | Dir GPIO | DIR.on() | DIR.off() |
+|-------|-----------|----------|----------|-----------|
+| Base | 22 | 27 | Right | Left |
+| Shoulder | 17 | 15 | TBD | TBD |
+| Elbow | 4 | 14 | TBD | TBD |
 | Servo PWM | 13, 16, 19, 20, 26 |
 | IR Sensors | 8, 11, 7 |
 
